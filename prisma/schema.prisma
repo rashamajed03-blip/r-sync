@@ -1,0 +1,179 @@
+// R-SYNC database schema
+// -----------------------------------------------------------------------
+// Two groups of models:
+//  1. Catalog data (Track) — the shared track database everyone searches
+//     and gets recommendations from. Wired up in this milestone.
+//  2. Per-user data (User, Crate, SetPlan, SavedTrack, RecentSearch,
+//     ImportedTrack) — modeled fully here so the schema is production-
+//     ready, but the app currently reads/writes this through localStorage
+//     via Zustand (see /src/store). Migrating those stores to call server
+//     actions against these tables is the natural next follow-up — see the
+//     README for exactly what's wired vs. modeled-only in this pass.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Track {
+  id            String   @id @default(cuid())
+  title         String
+  artist        String
+  label         String
+  genre         String
+  subgenre      String
+  releaseYear   Int
+  durationSec   Int
+  bpm           Int
+  camelotKey    String
+  musicalKey    String
+  energy        Int // 1–10
+  danceability  Int // 0–100
+  popularity    Int // 0–100
+  mood          String
+  vocal         Boolean  @default(false)
+  explicit      Boolean  @default(false)
+  artworkColor1 String   @default("#22D3EE")
+  artworkColor2 String   @default("#A855F7")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  savedBy   SavedTrack[]
+  crateRefs CrateTrack[]
+  setRefs   SetPlanTrack[]
+
+  @@index([genre])
+  @@index([camelotKey])
+  @@index([bpm])
+  @@index([title, artist])
+}
+
+// ---------------------------------------------------------------------------
+// Users (synced from Clerk via webhook — see /api/webhooks/clerk)
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id // Clerk user ID — no separate internal ID needed
+  email     String   @unique
+  firstName String?
+  lastName  String?
+  imageUrl  String?
+  bio       String?
+  plan      Plan     @default(FREE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  crates          Crate[]
+  setPlans        SetPlan[]
+  savedTracks     SavedTrack[]
+  recentSearches  RecentSearch[]
+  importedTracks  ImportedLibraryTrack[]
+}
+
+enum Plan {
+  FREE
+  PREMIUM
+}
+
+// ---------------------------------------------------------------------------
+// Per-user data — modeled, not yet wired (see note at top of file)
+// ---------------------------------------------------------------------------
+
+model Crate {
+  id        String   @id @default(cuid())
+  name      String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks    CrateTrack[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model CrateTrack {
+  id       String @id @default(cuid())
+  crateId  String
+  crate    Crate  @relation(fields: [crateId], references: [id], onDelete: Cascade)
+  trackId  String
+  track    Track  @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  position Int // preserves drag-and-drop order
+
+  @@unique([crateId, trackId])
+  @@index([crateId, position])
+}
+
+model SetPlan {
+  id        String   @id @default(cuid())
+  name      String   @default("Untitled set")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks    SetPlanTrack[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model SetPlanTrack {
+  id        String  @id @default(cuid())
+  setPlanId String
+  setPlan   SetPlan @relation(fields: [setPlanId], references: [id], onDelete: Cascade)
+  trackId   String
+  track     Track   @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  position  Int
+
+  @@unique([setPlanId, trackId])
+  @@index([setPlanId, position])
+}
+
+model SavedTrack {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trackId   String
+  track     Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, trackId])
+}
+
+model RecentSearch {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  query     String
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// One row per track in a user's imported Rekordbox library — deliberately
+// separate from Track (the shared catalog), since imported tracks are
+// personal data with fields the catalog doesn't have (raw Tonality string,
+// no popularity/mood/etc.) and shouldn't pollute the shared catalog.
+model ImportedLibraryTrack {
+  id          String  @id @default(cuid())
+  userId      String
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  artist      String
+  genre       String
+  label       String
+  year        Int?
+  bpm         Int?
+  camelotKey  String?
+  durationSec Int?
+  energy      Int // heuristic — see estimateEnergy() in rekordbox-import.ts
+  importedAt  DateTime @default(now())
+
+  @@index([userId])
+}
